@@ -21,6 +21,62 @@ services:
       chmod +x /start_router.sh &&
       /start_router.sh"
 
+  sdn_controller:
+    image: ubuntu:latest
+    container_name: sdn_controller
+    tty: true
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    networks:
+      client_net:
+        ipv4_address: 192.168.144.252
+      sdn_nfv_net:
+        ipv4_address: 192.168.147.252
+    volumes:
+      - ./SDN:/sdn
+    command: >
+      bash -c "
+      export DEBIAN_FRONTEND=noninteractive &&
+      apt-get update &&
+      apt-get install -y openvswitch-switch iproute2 iputils-ping tcpdump python3 jq &&
+      service openvswitch-switch start || true &&
+      ovs-vswitchd --pidfile --detach --log-file &&
+      sysctl -w net.ipv4.ip_forward=1 &&
+      ovs-vsctl --may-exist add-br br0 -- set bridge br0 datapath_type=netdev &&
+      ovs-vsctl set bridge br0 protocols=OpenFlow13 &&
+      ovs-vsctl --may-exist add-port br0 eth0 &&
+      ip addr flush dev eth0 &&
+      ip addr add 192.168.144.252/24 dev br0 &&
+      ip link set br0 up &&
+      ip route replace 192.168.145.0/24 via 192.168.147.253 &&
+      ip route replace 192.168.146.0/24 via 192.168.147.253 &&
+      chmod +x /sdn/*.sh &&
+      /sdn/apply_policy.sh &&
+      ovs-ofctl -O OpenFlow13 add-flow br0 'priority=100,actions=normal' &&
+      echo 'SDN Controller Ready' &&
+      tail -f /dev/null"
+
+  nfv_firewall:
+    build:
+      context: ./NFV
+      dockerfile: Dockerfile
+    container_name: nfv_firewall
+    tty: true
+    cap_add:
+      - NET_ADMIN
+    networks:
+      sdn_nfv_net:
+        ipv4_address: 192.168.147.253
+      service_net:
+        ipv4_address: 192.168.145.253
+      data_net:
+        ipv4_address: 192.168.146.253
+    depends_on:
+      - sdn_controller
+
   game_client:
     image: ubuntu:latest
     container_name: game_client
@@ -32,15 +88,18 @@ services:
         ipv4_address: 192.168.144.10
     depends_on:
       - router
+      - sdn_controller
+      - nfv_firewall
     volumes:
       - ./simulate.py:/simulate.py
       - ./performance_test.py:/performance_test.py
     command: >
       bash -c "
       export DEBIAN_FRONTEND=noninteractive &&
-      apt-get update && apt-get install -y iproute2 iputils-ping curl traceroute python3 python3-requests netcat-openbsd &&
+      apt-get update && apt-get install -y iproute2 iputils-ping curl traceroute python3 python3-requests netcat-openbsd tcpdump &&
+      python3 -c \"import ctypes, fcntl, socket, struct; s=socket.socket(); v=ctypes.create_string_buffer(struct.pack('II', 0x17, 0)); fcntl.ioctl(s.fileno(), 0x8946, struct.pack('16sP', b'eth0', ctypes.addressof(v)))\" &&
       ip route del default &&
-      ip route add default via 192.168.144.254 &&
+      ip route add default via 192.168.144.252 &&
       tail -f /dev/null"
 
   api_server:
@@ -53,7 +112,7 @@ services:
       service_net:
         ipv4_address: 192.168.145.10
     depends_on:
-      - router
+      - nfv_firewall
     volumes:
       - ./main.py:/main.py
       - ./start_api.sh:/start_api.sh
@@ -61,6 +120,7 @@ services:
       bash -c "
       export DEBIAN_FRONTEND=noninteractive &&
       apt-get update && apt-get install -y iproute2 iputils-ping python3 python3-pip python3-fastapi python3-redis uvicorn openssl &&
+      python3 -c \"import ctypes, fcntl, socket, struct; s=socket.socket(); v=ctypes.create_string_buffer(struct.pack('II', 0x17, 0)); fcntl.ioctl(s.fileno(), 0x8946, struct.pack('16sP', b'eth0', ctypes.addressof(v)))\" &&
       chmod +x /start_api.sh &&
       /start_api.sh"
 
@@ -74,39 +134,14 @@ services:
       data_net:
         ipv4_address: 192.168.146.10
     depends_on:
-      - router
+      - nfv_firewall
     command: >
       bash -c "
       export DEBIAN_FRONTEND=noninteractive &&
       apt-get update && apt-get install -y iproute2 iputils-ping redis-server &&
       ip route del default &&
-      ip route add default via 192.168.146.254 &&
+      ip route add default via 192.168.146.253 &&
       redis-server --protected-mode no --bind 0.0.0.0 --daemonize no"
-      
-  sdn_controller:
-    image: ubuntu:latest
-    container_name: sdn_controller
-    tty: true
-    cap_add:
-      - NET_ADMIN
-    networks:
-      client_net:
-        ipv4_address: 192.168.144.252
-    depends_on:
-      - router
-    volumes:
-      - ./SDN:/sdn
-    command: >
-      bash -c "
-      export DEBIAN_FRONTEND=noninteractive &&
-      apt-get update &&
-      apt-get install -y openvswitch-switch python3 jq &&
-      service openvswitch-switch start &&
-      chmod +x /sdn/*.sh &&
-      echo 'SDN Controller Ready' &&
-      tail -f /dev/null"
-
-
 
 networks:
   client_net:
@@ -121,3 +156,7 @@ networks:
     ipam:
       config:
         - subnet: 192.168.146.0/24
+  sdn_nfv_net:
+    ipam:
+      config:
+        - subnet: 192.168.147.0/24
