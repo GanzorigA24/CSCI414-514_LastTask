@@ -42,8 +42,7 @@ services:
       export DEBIAN_FRONTEND=noninteractive &&
       apt-get update &&
       apt-get install -y openvswitch-switch iproute2 iputils-ping tcpdump python3 jq &&
-      service openvswitch-switch start || true &&
-      ovs-vswitchd --pidfile --detach --log-file &&
+      service openvswitch-switch start &&
       sysctl -w net.ipv4.ip_forward=1 &&
       ovs-vsctl --may-exist add-br br0 -- set bridge br0 datapath_type=netdev &&
       ovs-vsctl set bridge br0 protocols=OpenFlow13 &&
@@ -51,8 +50,9 @@ services:
       ip addr flush dev eth0 &&
       ip addr add 192.168.144.252/24 dev br0 &&
       ip link set br0 up &&
-      ip route replace 192.168.145.0/24 via 192.168.147.253 &&
-      ip route replace 192.168.146.0/24 via 192.168.147.253 &&
+      ip link set eth1 up &&
+      ip route replace 192.168.145.0/24 via 192.168.147.253 dev eth1 &&
+      ip route replace 192.168.146.0/24 via 192.168.147.253 dev eth1 &&
       chmod +x /sdn/*.sh &&
       /sdn/apply_policy.sh &&
       ovs-ofctl -O OpenFlow13 add-flow br0 'priority=100,actions=normal' &&
@@ -67,6 +67,8 @@ services:
     tty: true
     cap_add:
       - NET_ADMIN
+    sysctls:
+      net.ipv4.ip_forward: "1"
     networks:
       sdn_nfv_net:
         ipv4_address: 192.168.147.253
@@ -145,18 +147,19 @@ services:
 
 networks:
   client_net:
-    ipam:
-      config:
-        - subnet: 192.168.144.0/24
+    external: true
+    name: csci414-514_final_exam_group_05-main_client_net
+
   service_net:
-    ipam:
-      config:
-        - subnet: 192.168.145.0/24
+    external: true
+    name: csci414-514_final_exam_group_05-main_service_net
+
   data_net:
-    ipam:
-      config:
-        - subnet: 192.168.146.0/24
+    external: true
+    name: csci414-514_final_exam_group_05-main_data_net
+
   sdn_nfv_net:
+    name: csci414final1_sdn_nfv_net
     ipam:
       config:
         - subnet: 192.168.147.0/24
